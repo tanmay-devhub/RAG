@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.local
+chroma_data/
+neo4j_data/
+ollama_data/
+node_modules/
+.next/
+*.egg-info/
+dist/
+.DS_Store
