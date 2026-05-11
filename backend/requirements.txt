@@ -1,10 +1,11 @@
 fastapi
+python-dotenv
 uvicorn[standard]
 langchain
+langchain-text-splitters
 langchain-ollama
-langchain-chroma
 langchain-community
-chromadb
+langchain-experimental
 pymupdf
 pydantic
 python-multipart

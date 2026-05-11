@@ -1,91 +1,124 @@
-import json
+import os
 import logging
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from collections import defaultdict
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse
 import fitz  # PyMuPDF
-from app.schemas import IngestResponse
-from app.services import chunker, vector_store, graph_store, llm
+from langchain_core.documents import Document
+from langchain_experimental.graph_transformers import LLMGraphTransformer
+from langchain_ollama import ChatOllama
+
+from app.schemas import IngestJobResponse, JobStatusResponse
+from app.services import chunker, graph_store, job_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_ENTITY_PROMPT_TEMPLATE = (
-    "Extract named entities (people, organizations, technologies, concepts, locations) from this text.\n"
-    "Return ONLY a JSON object in this format with no other text:\n"
-    '{"entities": ["entity1", "entity2"], "relationships": [["entity1", "RELATES_TO", "entity2"]]}\n'
-    "Text: {chunk}"
-)
+_transformer: LLMGraphTransformer | None = None
 
 
-def _extract_text_from_pdf(data: bytes) -> str:
-    """Extract and concatenate text from all pages of a PDF."""
-    doc = fitz.open(stream=data, filetype="pdf")
-    return "\n".join(page.get_text() for page in doc)
+def _get_transformer() -> LLMGraphTransformer:
+    global _transformer
+    if _transformer is None:
+        chat_llm = ChatOllama(
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+            model=os.getenv("GRAPH_MODEL", "gpt-oss:20b-cloud"),
+        )
+        _transformer = LLMGraphTransformer(llm=chat_llm, ignore_tool_usage=True)
+    return _transformer
 
 
-def _extract_entities(chunk: str) -> dict:
-    """Use the LLM to extract entities and relationships from a chunk; returns safe dict on failure."""
-    prompt = _ENTITY_PROMPT_TEMPLATE.format(chunk=chunk)
+def _extract_text(filename: str, data: bytes) -> str:
+    if filename.lower().endswith(".pdf"):
+        doc = fitz.open(stream=data, filetype="pdf")
+        return "\n".join(page.get_text() for page in doc)
+    return data.decode("utf-8")
+
+
+# ── background worker ─────────────────────────────────────────────────────────
+
+def _run_ingest(job_id: str, filename: str, data: bytes) -> None:
+    """
+    Synchronous ingestion worker — runs in FastAPI's thread-pool via BackgroundTasks.
+
+    Steps:
+      1. Extract text from file
+      2. Chunk the text
+      3. Run LLMGraphTransformer across all chunks in one batch call
+      4. Batch-write everything to Neo4j (UNWIND — O(1) queries per document)
+      5. Update job status as progress is made
+    """
+    job_store.update_job(job_id, status="processing")
     try:
-        raw = llm.get_llm().invoke(prompt)
-        # Find JSON object boundaries to handle any surrounding text
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        if start == -1 or end == 0:
-            raise ValueError("No JSON object found in LLM response")
-        return json.loads(raw[start:end])
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning("Entity extraction failed: %s", exc)
-        return {"entities": [], "relationships": []}
+        text = _extract_text(filename, data)
+        if not text.strip():
+            raise ValueError("File contains no extractable text")
+
+        chunks = chunker.chunk_text(text)
+        job_store.update_job(job_id, total_chunks=len(chunks))
+
+        docs = [Document(page_content=chunk) for chunk in chunks]
+
+        # LLMGraphTransformer.convert_to_graph_documents is synchronous;
+        # running here in the thread-pool avoids blocking the event loop.
+        transformer = _get_transformer()
+        graph_docs = transformer.convert_to_graph_documents(docs)
+
+        entities_created, relationships_created = graph_store.store_graph_documents_batch(
+            graph_docs, chunks, filename,
+            progress_cb=lambda done: job_store.update_job(job_id, chunks_done=done),
+        )
+
+        job_store.update_job(
+            job_id,
+            status="done",
+            chunks_done=len(chunks),
+            entities_created=entities_created,
+            relationships_created=relationships_created,
+        )
+        logger.info("Job %s done: %s — %d chunks, %d entities, %d rels",
+                    job_id, filename, len(chunks), entities_created, relationships_created)
+
+    except Exception as exc:
+        logger.error("Job %s failed: %s", job_id, exc)
+        job_store.update_job(job_id, status="error", error=str(exc))
 
 
-@router.post("/ingest", response_model=IngestResponse)
-async def ingest(file: UploadFile = File(...)) -> IngestResponse:
-    """Ingest a PDF or .txt file: chunk, embed, and store in ChromaDB and Neo4j."""
+# ── routes ────────────────────────────────────────────────────────────────────
+
+@router.post("/ingest", response_model=IngestJobResponse, status_code=202)
+async def ingest(background_tasks: BackgroundTasks, file: UploadFile = File(...)) -> IngestJobResponse:
+    """
+    Accept a file upload and return immediately with a job_id.
+    The actual graph extraction and storage happens in the background.
+    Poll GET /ingest/status/{job_id} to track progress.
+    """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
     filename = file.filename
-    data = await file.read()
-
-    if filename.lower().endswith(".pdf"):
-        text = _extract_text_from_pdf(data)
-    elif filename.lower().endswith(".txt"):
-        text = data.decode("utf-8")
-    else:
+    if not (filename.lower().endswith(".pdf") or filename.lower().endswith(".txt")):
         raise HTTPException(status_code=400, detail="Only .pdf and .txt files are supported")
 
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="File contains no extractable text")
+    data = await file.read()
+    job_id = job_store.create_job(filename)
 
-    chunks = chunker.chunk_text(text)
-    total_entities = 0
-    total_relationships = 0
+    # BackgroundTasks runs sync functions in Starlette's thread pool
+    background_tasks.add_task(_run_ingest, job_id, filename, data)
 
-    chunk_texts: list[str] = []
-    chunk_metadatas: list[dict] = []
-    chunk_ids: list[str] = []
+    return IngestJobResponse(job_id=job_id, filename=filename, status="pending")
 
-    for idx, chunk in enumerate(chunks):
-        chunk_texts.append(chunk)
-        chunk_metadatas.append({"source": filename, "chunk_index": idx})
-        chunk_ids.append(f"{filename}_{idx}")
 
-        extracted = _extract_entities(chunk)
-        entities: list[str] = extracted.get("entities", [])
-        raw_rels = extracted.get("relationships", [])
-        relationships: list[tuple[str, str, str]] = [
-            (r[0], r[1], r[2]) for r in raw_rels if isinstance(r, list) and len(r) == 3
-        ]
+@router.get("/ingest/status/{job_id}", response_model=JobStatusResponse)
+async def ingest_status(job_id: str) -> JobStatusResponse:
+    """Return the current status of an ingest job."""
+    job = job_store.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return JobStatusResponse(**job)
 
-        ent_count, rel_count = graph_store.store_entities(entities, relationships, filename, idx)
-        total_entities += ent_count
-        total_relationships += rel_count
 
-    vector_store.add_chunks(chunk_texts, chunk_metadatas, chunk_ids)
-
-    return IngestResponse(
-        chunks_created=len(chunks),
-        entities_created=total_entities,
-        relationships_created=total_relationships,
-        filename=filename,
-    )
+@router.get("/ingest/jobs")
+async def list_ingest_jobs() -> dict:
+    """Return all known ingest jobs (useful for UI recovery after page refresh)."""
+    return {"jobs": job_store.list_jobs()}

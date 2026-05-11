@@ -16,15 +16,30 @@ def get_llm() -> OllamaLLM:
 
 
 def generate_answer(question: str, context_chunks: list[str]) -> str:
-    """Build a RAG prompt from context chunks and return the LLM's answer string."""
+    """Hybrid prompt: use document context when relevant, general knowledge otherwise."""
     numbered_context = "\n".join(
         f"[{i + 1}] {chunk}" for i, chunk in enumerate(context_chunks)
     )
     prompt = (
-        "You are a helpful assistant. Answer the question using ONLY the context provided below.\n"
-        'If the context does not contain enough information, say "I don\'t have enough context to answer this."\n'
-        "Do not make up information.\n\n"
-        f"Context:\n{numbered_context}\n\n"
+        "You are a helpful, knowledgeable AI assistant.\n"
+        "You have been given some document context below. Follow these rules:\n"
+        "1. If the context directly answers the question, use it and cite it.\n"
+        "2. If the context is only loosely related or not relevant, IGNORE it and answer from your general knowledge.\n"
+        "3. Never say 'I don't have enough context' for general knowledge questions — just answer them.\n"
+        "4. Always give a complete, helpful answer.\n\n"
+        f"Document context:\n{numbered_context}\n\n"
+        f"Question: {question}\n\n"
+        "Answer:"
+    )
+    llm = get_llm()
+    return llm.invoke(prompt)
+
+
+def generate_general_answer(question: str) -> str:
+    """Answer a general question without document context, like a regular LLM/AI assistant."""
+    prompt = (
+        "You are a helpful, knowledgeable AI assistant. "
+        "Answer the following question as accurately and helpfully as possible.\n\n"
         f"Question: {question}\n\n"
         "Answer:"
     )

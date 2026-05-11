@@ -1,11 +1,21 @@
 from pydantic import BaseModel
 
 
-class IngestResponse(BaseModel):
-    chunks_created: int
+class IngestJobResponse(BaseModel):
+    job_id: str
+    filename: str
+    status: str  # always "pending" on initial response
+
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    filename: str
+    status: str  # pending | processing | done | error
+    chunks_done: int
+    total_chunks: int
     entities_created: int
     relationships_created: int
-    filename: str
+    error: str | None
 
 
 class Source(BaseModel):
@@ -13,7 +23,7 @@ class Source(BaseModel):
     source: str
     chunk_index: int
     score: float
-    type: str  # "vector" or "graph"
+    type: str
 
 
 class QueryRequest(BaseModel):

@@ -1,11 +1,14 @@
+from dotenv import load_dotenv
+load_dotenv()  # must run before any service module is imported
+
 import os
 import logging
 import httpx
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import ingest, query
-from app.services import graph_store, vector_store
+from app.routers import ingest, query, graph
+from app.services import graph_store
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,21 +38,14 @@ app.add_middleware(
 
 app.include_router(ingest.router)
 app.include_router(query.router)
+app.include_router(graph.router)
 
 
 @app.get("/health")
 async def health() -> dict:
-    """Check liveness of ChromaDB, Neo4j, and Ollama."""
-    chroma_ok = False
+    """Check liveness of Neo4j and Ollama."""
     neo4j_ok = False
     ollama_ok = False
-
-    try:
-        collection = vector_store.get_collection()
-        collection.count()
-        chroma_ok = True
-    except Exception as exc:
-        logger.warning("ChromaDB health check failed: %s", exc)
 
     try:
         graph_store._get_driver().verify_connectivity()
@@ -66,7 +62,6 @@ async def health() -> dict:
 
     return {
         "status": "ok",
-        "chromadb": chroma_ok,
         "neo4j": neo4j_ok,
         "ollama": ollama_ok,
     }

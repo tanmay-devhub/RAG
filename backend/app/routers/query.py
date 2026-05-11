@@ -1,7 +1,7 @@
 import logging
 from fastapi import APIRouter
 from app.schemas import QueryRequest, QueryResponse, Source
-from app.services import vector_store, graph_store, llm
+from app.services import graph_store, llm, reranker
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -9,40 +9,30 @@ router = APIRouter()
 
 @router.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest) -> QueryResponse:
-    """Hybrid query: merge vector and graph results, then generate an answer with the LLM."""
-    vector_results = vector_store.query_chunks(request.question, request.top_k)
-    graph_results = graph_store.query_related(request.question, request.top_k)
+    """
+    Query pipeline:
+      1. Retrieve candidate chunks from Neo4j (full-text + entity traversal)
+      2. Re-rank with HuggingFace cross-encoder
+      3. Feed top-k into hybrid LLM prompt (RAG if relevant, general otherwise)
+    """
+    # Fetch more candidates than needed so the reranker has room to work
+    candidates = graph_store.query_chunks(request.question, top_k=request.top_k * 4)
+    ranked = reranker.rerank(request.question, candidates, top_k=request.top_k)
 
-    # Build merged list: vector results first, then graph-only (deduplicated by chunk_index)
-    seen_chunks: set[int] = set()
-    merged_sources: list[Source] = []
-
-    for r in vector_results:
-        meta = r["metadata"]
-        chunk_index = int(meta.get("chunk_index", -1))
-        seen_chunks.add(chunk_index)
-        merged_sources.append(Source(
+    sources = [
+        Source(
             text=r["text"],
-            source=meta.get("source", "unknown"),
-            chunk_index=chunk_index,
-            score=r["score"],
-            type="vector",
-        ))
-
-    for r in graph_results:
-        chunk_index = int(r.get("chunk_index", -1))
-        if chunk_index in seen_chunks:
-            continue
-        seen_chunks.add(chunk_index)
-        merged_sources.append(Source(
-            text=r["text"],
-            source=r.get("source", "unknown"),
-            chunk_index=chunk_index,
+            source=r["source"],
+            chunk_index=r["chunk_index"],
             score=r["score"],
             type="graph",
-        ))
+        )
+        for r in ranked
+    ]
 
-    context_chunks = [s.text for s in merged_sources]
-    answer = llm.generate_answer(request.question, context_chunks)
+    if sources:
+        answer = llm.generate_answer(request.question, [s.text for s in sources])
+    else:
+        answer = llm.generate_general_answer(request.question)
 
-    return QueryResponse(answer=answer, sources=merged_sources)
+    return QueryResponse(answer=answer, sources=sources)
