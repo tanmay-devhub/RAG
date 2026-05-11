@@ -1,6 +1,6 @@
 # GraphRAG
 
-> **Pure Graph-Based Retrieval-Augmented Generation** — knowledge graphs, not vector stores.
+> **Pure Graph-Based Retrieval-Augmented Generation** knowledge graphs, not vector stores.
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
@@ -13,7 +13,7 @@
 
 ## Overview
 
-GraphRAG is a **fully local, privacy-first** document intelligence system that replaces the traditional vector similarity approach with a **property knowledge graph**. Documents are ingested as entity graphs — every concept, person, technology, and relationship is stored as a native Neo4j node and edge. At query time, **multi-hop graph traversal** + **HuggingFace cross-encoder reranking** retrieves precise, grounded answers.
+GraphRAG is a **fully local, privacy-first** document intelligence system that replaces the traditional vector similarity approach with a **property knowledge graph**. Documents are ingested as entity graphs every concept, person, technology, and relationship is stored as a native Neo4j node and edge. At query time, **multi-hop graph traversal** + **HuggingFace cross-encoder reranking** retrieves precise, grounded answers.
 
 No external APIs. No embeddings database. No cloud dependency.
 
@@ -23,14 +23,14 @@ No external APIs. No embeddings database. No cloud dependency.
 
 | Capability | Detail |
 |---|---|
-| **Graph extraction** | LangChain `LLMGraphTransformer` — entities, relationships, and typed nodes |
+| **Graph extraction** | LangChain `LLMGraphTransformer` entities, relationships, and typed nodes |
 | **Pure graph retrieval** | Full-text index + entity keyword match + 1-hop neighbour traversal |
 | **Cross-encoder reranking** | `cross-encoder/ms-marco-MiniLM-L-6-v2` from HuggingFace |
 | **Hybrid LLM answering** | Uses document context when relevant; falls back to general knowledge |
 | **Async ingest pipeline** | `POST /ingest` returns immediately; background thread processes the file |
-| **Batch Neo4j writes** | UNWIND-based bulk writes — O(1) queries per document, not O(entities) |
+| **Batch Neo4j writes** | UNWIND-based bulk writes O(1) queries per document, not O(entities) |
 | **Multi-document support** | Per-document graph views; shared entities bridge cross-doc queries |
-| **Interactive graph** | D3.js force-directed graph — chunk backbone + semantic edges + per-doc filter |
+| **Interactive graph** | D3.js force-directed graph chunk backbone + semantic edges + per-doc filter |
 | **Fully local** | Ollama LLM · Neo4j Community · zero cloud required |
 
 ---
@@ -88,7 +88,7 @@ No external APIs. No embeddings database. No cloud dependency.
 | Component | Technology |
 |---|---|
 | API framework | [FastAPI](https://fastapi.tiangolo.com) + Uvicorn |
-| Graph extraction | [LangChain Experimental — LLMGraphTransformer](https://python.langchain.com) |
+| Graph extraction | [LangChain Experimental LLMGraphTransformer](https://python.langchain.com) |
 | LLM inference | [Ollama](https://ollama.com) via `langchain-ollama` |
 | Graph database | [Neo4j 5 Community](https://neo4j.com) |
 | Reranker | [cross-encoder/ms-marco-MiniLM-L-6-v2](https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2) |
@@ -101,7 +101,7 @@ No external APIs. No embeddings database. No cloud dependency.
 | Framework | [Next.js 14](https://nextjs.org) (App Router) |
 | Language | TypeScript 5 |
 | Styling | Tailwind CSS 3 |
-| Graph visualisation | [D3.js v7](https://d3js.org) — force-directed |
+| Graph visualisation | [D3.js v7](https://d3js.org) force-directed |
 
 ---
 
@@ -205,7 +205,7 @@ All backend configuration lives in `backend/.env`:
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/ingest` | Upload PDF or TXT — returns `job_id` instantly (HTTP 202) |
+| `POST` | `/ingest` | Upload PDF or TXT returns `job_id` instantly (HTTP 202) |
 | `GET` | `/ingest/status/{job_id}` | Poll ingest progress |
 | `GET` | `/ingest/jobs` | List all jobs (page-refresh recovery) |
 
@@ -286,16 +286,16 @@ graphrag/
 │   │   │   └── graph.py            # Graph data, file list, delete
 │   │   └── services/
 │   │       ├── chunker.py          # Text splitting
-│   │       ├── graph_store.py      # Neo4j — batch UNWIND writes, multi-hop query
+│   │       ├── graph_store.py      # Neo4j batch UNWIND writes, multi-hop query
 │   │       ├── job_store.py        # Thread-safe in-memory job registry
-│   │       ├── llm.py              # Ollama — RAG prompt + general prompt
+│   │       ├── llm.py              # Ollama RAG prompt + general prompt
 │   │       └── reranker.py         # HuggingFace cross-encoder
 │   ├── requirements.txt
 │   ├── .env.example
 │   └── Dockerfile
 ├── frontend/
 │   ├── app/
-│   │   ├── page.tsx                # Root page — Chat / Graph tabs
+│   │   ├── page.tsx                # Root page Chat / Graph tabs
 │   │   ├── layout.tsx
 │   │   └── components/
 │   │       ├── ChatWindow.tsx      # Query interface + message history
@@ -317,11 +317,11 @@ graphrag/
 
 When a question arrives, three strategies execute against Neo4j and are merged before reranking:
 
-1. **Full-text search** — Lucene index on `Chunk.text` matches question keywords directly in document text.
-2. **Entity traversal** — Question keywords matched against `Entity.name`; `MENTIONS` edges walk back to the source `Chunk` nodes, and `NEXT_CHUNK` neighbours are included for sentence-boundary continuity.
-3. **Multi-hop traversal** — From each matched entity, one semantic relationship hop reaches related entities, then their chunks. This surfaces context that shares no keywords with the question but is conceptually linked.
+1. **Full-text search**: Lucene index on `Chunk.text` matches question keywords directly in document text.
+2. **Entity traversal**: Question keywords matched against `Entity.name`; `MENTIONS` edges walk back to the source `Chunk` nodes, and `NEXT_CHUNK` neighbours are included for sentence-boundary continuity.
+3. **Multi-hop traversal**: From each matched entity, one semantic relationship hop reaches related entities, then their chunks. This surfaces context that shares no keywords with the question but is conceptually linked.
 
-All candidates are deduplicated, then scored by a **cross-encoder** that evaluates the full `(question, chunk)` pair — significantly more accurate than cosine similarity. Top-k results feed a **hybrid LLM prompt** that cites document evidence when relevant and answers from general knowledge otherwise.
+All candidates are deduplicated, then scored by a **cross-encoder** that evaluates the full `(question, chunk)` pair, significantly more accurate than cosine similarity. Top-k results feed a **hybrid LLM prompt** that cites document evidence when relevant and answers from general knowledge otherwise.
 
 ---
 
@@ -330,9 +330,9 @@ All candidates are deduplicated, then scored by a **cross-encoder** that evaluat
 | Bottleneck | Solution implemented |
 |---|---|
 | Blocking ingest | Background thread via FastAPI `BackgroundTasks`; HTTP 202 returned instantly |
-| N+1 Neo4j writes | `UNWIND` bulk queries — **5–7 round-trips per document** regardless of entity count |
+| N+1 Neo4j writes | `UNWIND` bulk queries **5–7 round-trips per document** regardless of entity count |
 | Connection contention | Neo4j driver pool set to 50 connections with tuned acquisition timeout |
-| Document listing | `(:Document)` registry nodes — O(1) metadata lookup without scanning chunks |
+| Document listing | `(:Document)` registry nodes O(1) metadata lookup without scanning chunks |
 | Cross-encoder cost | Candidates capped at `top_k × 4` before inference; reranker loaded once and cached |
 | Large graph render | Per-document view isolates subgraphs; hard node/edge limits prevent browser freeze |
 
